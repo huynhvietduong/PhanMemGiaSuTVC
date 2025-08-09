@@ -185,7 +185,7 @@ class App(tk.Tk):
             if hasattr(self, "clock_job"):
                 self.after_cancel(self.clock_job)
             if hasattr(self, "schedule_job"):
-                self.after_cancel(self.schedule_job)
+                self.after_cancel(self.schedule_job)  # hủy vòng lặp
         except:
             pass
         super().destroy()
@@ -214,9 +214,9 @@ class App(tk.Tk):
 
     # Làm mới lịch tuần + lịch hôm nay định kỳ mỗi 5 giây
     def update_all_schedules(self):
-        self.update_schedule_grid();
-        self.update_today_schedule();
-        self.after(5000, self.update_all_schedules)
+        self.update_schedule_grid()
+        self.update_today_schedule()
+        self.schedule_job = self.after(5000, self.update_all_schedules)  # lưu ID
 
     # Vẽ toàn bộ lịch tuần dạng lưới (các ô thời gian)
     def update_upcoming_class(self):

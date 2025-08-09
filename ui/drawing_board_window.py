@@ -74,7 +74,6 @@ class DrawingBoardWindow(tk.Toplevel):
             capstyle=tk.ROUND, joinstyle=tk.ROUND
         )
 
-        self.highlighter_on = False
         self._force_straight_line = False
 
         self._build_toolbar()
@@ -107,10 +106,6 @@ class DrawingBoardWindow(tk.Toplevel):
 
         # Khi cửa sổ thay đổi vị trí/kích thước (kéo sang màn hình khác) → tự maximize lại nếu cần
         self.bind('<Configure>', self._ensure_maximized_after_move)
-
-        self.bind_all("<KeyPress-bracketleft>", lambda e: self._adjust_pen_width(-1))
-        self.bind_all("<KeyPress-bracketright>", lambda e: self._adjust_pen_width(+1))
-        self.bind_all("<KeyPress-h>", lambda e: self.toggle_highlighter())
         self.bind_all("<Control-m>", lambda e: self._choose_custom_color())
 
         self.canvas.bind("<Configure>", self._on_canvas_resize)
@@ -420,16 +415,7 @@ class DrawingBoardWindow(tk.Toplevel):
         colors_sub.add_separator()
         colors_sub.add_command(label="Chọn màu…", command=self._choose_custom_color)
 
-        width_sub = tk.Menu(self.pen_menu, tearoff=0)
-        self.width_var = tk.IntVar(value=self.pen_width)
-        for w in (1, 2, 3, 5, 8, 12, 16, 20):
-            width_sub.add_radiobutton(label=str(w), value=w, variable=self.width_var, command=self._on_width_change)
-
-        self._hl_var = tk.BooleanVar(value=self.highlighter_on)
         self.pen_menu.add_cascade(label="🎨 Màu", menu=colors_sub)
-        self.pen_menu.add_cascade(label="📏 Độ dày", menu=width_sub)
-        self.pen_menu.add_checkbutton(label="🖍️ Highlighter (trong suốt)",
-                                      variable=self._hl_var, command=self.toggle_highlighter)
 
         # --- ERASER: bỏ menu xổ xuống, chỉ còn nút + thanh trượt ---
         # Biến trạng thái kích thước tẩy (slider sẽ dùng biến này)
@@ -578,15 +564,6 @@ class DrawingBoardWindow(tk.Toplevel):
         except Exception:
             pass
 
-    def _on_width_change(self):
-        """ ✨ FIX 2.0: Called when width changes. Updates self.pen_width. """
-        try:
-            # Luôn cập nhật self.pen_width, đây sẽ là nguồn dữ liệu chính
-            self.pen_width = self.width_var.get()
-        except (tk.TclError, ValueError):
-            # Bỏ qua lỗi nếu spinbox rỗng hoặc giá trị không hợp lệ
-            self.pen_width = 3  # Đặt lại giá trị mặc định
-
     def _on_eraser_width_change(self):
         # đồng bộ cả 2 biến
         self.eraser_width = int(self.eraser_width_var.get())
@@ -610,18 +587,6 @@ class DrawingBoardWindow(tk.Toplevel):
             return int(self.eraser_width_var.get())
         except Exception:
             return int(getattr(self, "eraser_width", 25))
-
-    def toggle_highlighter(self):
-        """Toggles highlighter mode."""
-        self.highlighter_on = self._hl_var.get()
-        if self.highlighter_on:
-            self._set_tool("pen")  # Bật highlight thì chuyển sang bút luôn
-
-    def _adjust_pen_width(self, delta):
-        """Adjusts pen width with keyboard shortcuts."""
-        new_w = max(1, min(50, self.width_var.get() + delta))
-        self.width_var.set(new_w)
-        self._on_width_change()  # Gọi hàm đã được hợp nhất
 
     def _build_canvas(self):
         self.canvas = tk.Canvas(self, bg=self.bg_color, highlightthickness=0)
@@ -800,7 +765,7 @@ class DrawingBoardWindow(tk.Toplevel):
 
         is_pen = self.current_tool == "pen"
         is_eraser = self.current_tool == "eraser"
-        cur_w = self.width_var.get() if is_pen else self._get_eraser_width()
+        cur_w = 3 if is_pen else self._get_eraser_width()
         color = self.draw_color if is_pen else self.bg_color
 
         self.canvas.delete("preview")
@@ -818,13 +783,13 @@ class DrawingBoardWindow(tk.Toplevel):
                 )
         elif self.current_tool == "line":
             self.canvas.create_line(self.start_x, self.start_y, event.x, event.y,
-                                    fill=self.draw_color, width=self.width_var.get(), tags=("preview",))
+                                    fill=self.draw_color, tags=("preview",))
         elif self.current_tool == "rect":
             self.canvas.create_rectangle(self.start_x, self.start_y, event.x, event.y,
-                                         outline=self.draw_color, width=self.width_var.get(), tags=("preview",))
+                                         outline=self.draw_color, tags=("preview",))
         elif self.current_tool == "oval":
             self.canvas.create_oval(self.start_x, self.start_y, event.x, event.y,
-                                    outline=self.draw_color, width=self.width_var.get(), tags=("preview",))
+                                    outline=self.draw_color, tags=("preview",))
 
         self.canvas.tag_raise("preview")
 
@@ -845,7 +810,7 @@ class DrawingBoardWindow(tk.Toplevel):
         if self.current_tool in ("pen", "eraser"):
             self.on_pen_up(event)
         else:  # Shapes
-            cur_w = self.width_var.get()
+            cur_w = 3
             data = {"color": self.draw_color, "width": cur_w}
             if self.current_tool == "line":
                 pts = [(self.start_x, self.start_y), (event.x, event.y)]
@@ -886,12 +851,13 @@ class DrawingBoardWindow(tk.Toplevel):
                 self._commit_stroke(self._pen_points, (0, 0, 0, 0), width, mode="eraser")
             else:
                 # pen / highlighter
-                alpha = 128 if self.highlighter_on else 255
+                # luôn là bút thường (không còn highlighter)
+                alpha = 255
                 rgba = self._hex_to_rgba(self.draw_color, alpha=alpha)
-                width = self.width_var.get()
+                width = 3
                 self._draw_line_points_rgba(self._pen_points, rgba, width)
                 self._refresh_ink_layer()
-                self._commit_stroke(self._pen_points, rgba, width, mode="pen" if alpha == 255 else "highlighter")
+                self._commit_stroke(self._pen_points, rgba, width, mode="pen")
 
         self._pen_points = []
         self.canvas.delete("preview")
@@ -904,7 +870,7 @@ class DrawingBoardWindow(tk.Toplevel):
                 "points": [(float(x), float(y)) for (x, y) in points],
                 "rgba": tuple(int(v) for v in rgba),  # (r,g,b,a)
                 "width": int(width),
-                "mode": mode  # "pen" | "highlighter" | "eraser"
+                "mode": mode  # "pen" | "eraser"
             }
         ))
 
