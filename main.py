@@ -63,7 +63,7 @@ class App(tk.Tk):
     def create_menu(self):
 
         menu_bar = tk.Menu(self)
-        #self.config(menu=menu_bar)
+        self.config(menu=menu_bar)
         manage_menu = tk.Menu(menu_bar, tearoff=0)
         manage_menu.add_command(label="🌐 Mở bảng điều khiển", command=self.open_dashboard)
         menu_bar.add_cascade(label="Quản lý", menu=manage_menu)

@@ -655,11 +655,21 @@ class DrawingBoardWindow(tk.Toplevel):
         ch = max(1, self.canvas.winfo_height())
 
         # Tạo ảnh RGBA trong suốt để chứa nét vẽ
+        recreate_draw = False
         if self._ink_img is None or self._ink_img.size != (cw * self.INK_SCALE, ch * self.INK_SCALE):
-            self._ink_img = PILImage.new("RGBA", (cw * self.INK_SCALE, ch * self.INK_SCALE), (0, 0, 0, 0))
+            # Khi kích thước canvas thay đổi, tạo lại ảnh mực
+            self._ink_img = PILImage.new(
+                "RGBA", (cw * self.INK_SCALE, ch * self.INK_SCALE), (0, 0, 0, 0)
+            )
+            recreate_draw = True
 
-        # Drawer cho nét vẽ
-        if self._ink_draw is None:
+            # Luôn đảm bảo _ink_draw tham chiếu đúng tới _ink_img hiện tại
+        if (
+                recreate_draw
+                or self._ink_draw is None
+                or getattr(getattr(self._ink_draw, "im", None), "mode", None) is None
+                or getattr(self._ink_draw, "im", None) is not getattr(self._ink_img, "im", None)
+        ):
             from PIL import ImageDraw
             self._ink_draw = ImageDraw.Draw(self._ink_img, "RGBA")
 
