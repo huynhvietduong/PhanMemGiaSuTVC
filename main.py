@@ -681,4 +681,4 @@ class DashboardWindow(tk.Tk):
 if __name__ == "__main__":
     db = DatabaseManager()
     app = DashboardWindow(db)
-    app.mainloop()
+    app.mainloop()#########
