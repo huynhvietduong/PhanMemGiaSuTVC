@@ -250,8 +250,6 @@ class DrawingBoardWindow(tk.Toplevel):
         colors_sub.add_command(label="Chọn màu…", command=self._choose_custom_color)
 
         self.pen_menu.add_cascade(label="🎨 Màu", menu=colors_sub)
-
-        # --- ERASER: bỏ menu xổ xuống, chỉ còn nút + thanh trượt ---
         # Biến trạng thái kích thước tẩy (slider sẽ dùng biến này)
         self.eraser_width_var = tk.IntVar(value=self.eraser_width)
 
@@ -260,9 +258,10 @@ class DrawingBoardWindow(tk.Toplevel):
         self.eraser_btn.pack(side=tk.LEFT, padx=4)
 
         # Thanh trượt chỉnh kích thước tẩy
+        ttk.Label(bar, text="Độ dày").pack(side=tk.LEFT, padx=(6, 2))
         self._eraser_scale = ttk.Scale(
-            bar, from_=5, to=100, orient="horizontal",
-            command=lambda v: self._set_eraser_from_scale(v), length=120
+            bar, from_=1, to=100, orient="horizontal",
+            command=lambda v: self._set_eraser_from_scale(v), length=160
         )
         self._eraser_scale.set(self.eraser_width_var.get())
         self._eraser_scale.pack(side=tk.LEFT, padx=(2, 6))
@@ -665,7 +664,7 @@ class DrawingBoardWindow(tk.Toplevel):
 
         is_pen = self.current_tool == "pen"
         is_eraser = self.current_tool == "eraser"
-        cur_w = 3 if is_pen else self._get_eraser_width()
+        cur_w = (self._get_pen_width() if is_pen else self._get_eraser_width())
         color = self.draw_color if is_pen else self.bg_color
 
         self.canvas.delete("preview")
@@ -796,9 +795,11 @@ class DrawingBoardWindow(tk.Toplevel):
     def _on_eraser_width_change(self):
         """Cập nhật khi đổi kích thước tẩy từ menu."""
         try:
-            self.eraser_width = self.eraser_width_var.get()
+            w = int(self.eraser_width_var.get())
         except (tk.TclError, ValueError):
-            self.eraser_width = 25
+            w = 25
+        self.eraser_width = w
+        self.pen_width = w
 
     # Thay đổi độ rộng tẩy từ thanh trượt
     def _set_eraser_from_scale(self, v):
@@ -818,6 +819,13 @@ class DrawingBoardWindow(tk.Toplevel):
             return int(self.eraser_width_var.get())
         except Exception:
             return int(getattr(self, "eraser_width", 25))
+    # Lấy độ rộng pen hiện tại
+    def _get_pen_width(self):
+        """Độ dày nét bút (dùng chung thanh trượt với eraser)."""
+        try:
+            return int(self.eraser_width_var.get())
+        except Exception:
+            return int(getattr(self, "pen_width", 3))
 
     # Kết thúc một stroke bút, lưu vào dữ liệu trang
     def on_pen_up(self, event):
@@ -844,7 +852,7 @@ class DrawingBoardWindow(tk.Toplevel):
                 # luôn là bút thường (không còn highlighter)
                 alpha = 255
                 rgba = self._hex_to_rgba(self.draw_color, alpha=alpha)
-                width = 3
+                width = self._get_pen_width()
                 self._draw_line_points_rgba(self._pen_points, rgba, width)
                 self._refresh_ink_layer()
                 self._commit_stroke(self._pen_points, rgba, width, mode="pen")
