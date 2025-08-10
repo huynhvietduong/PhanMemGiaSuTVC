@@ -8,6 +8,10 @@ from tkinter import messagebox
 from ui.drawing_board_window import DrawingBoardWindow
 # Import cửa sổ Đánh giá năng lực vì nó được gọi từ đây
 from .skill_rating_window import SkillRatingWindow
+import subprocess
+import shutil
+import platform
+
 class SessionDetailWindow(tk.Toplevel):
     # Giao diện điểm danh và nhập nhật ký buổi học
     def __init__(self, parent, db_manager, session_date, group_id=None, group_name=None, makeup_info=None):
@@ -83,7 +87,7 @@ class SessionDetailWindow(tk.Toplevel):
         if not self.is_makeup_session:
             ttk.Button(btn_frame, text="Đánh giá năng lực", command=self.open_skill_rating).pack(side="left", padx=5)
 
-        ttk.Button(btn_frame, text="🖍️ Bảng Vẽ Bài Giảng", command=self.open_board).pack(side="left", padx=5)
+        ttk.Button(btn_frame, text="🖍️ Bảng Vẽ Bài Giảng", command=self.open_board_chooser).pack(side="left", padx=5)
         ttk.Button(btn_frame, text="Lưu & Kết thúc buổi học",
                    command=self.save_session).pack(side="left", padx=5)
 
@@ -268,6 +272,68 @@ class SessionDetailWindow(tk.Toplevel):
                 messagebox.showerror("Lỗi", f"File không tồn tại:\n{file_path}", parent=self)
         except Exception as e:
             messagebox.showerror("Lỗi", f"Không thể mở file:\n{e}", parent=self)
+    def open_board_chooser(self):
+        # Yêu cầu đã có session_id như luồng bảng vẽ mặc định
+        if not self.session_id:
+            messagebox.showerror("Chưa có buổi học", "Vui lòng lưu buổi học trước khi mở Bảng vẽ.", parent=self)
+            return
+
+        dlg = tk.Toplevel(self)
+        dlg.title("Chọn phần mềm bảng vẽ")
+        dlg.transient(self)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+
+        frm = ttk.Frame(dlg, padding=10)
+        frm.pack(fill="both", expand=True)
+
+        ttk.Label(frm, text="Chọn công cụ để mở:").pack(anchor="w", pady=(0, 8))
+
+        # Hàng nút lựa chọn
+        btns = ttk.Frame(frm)
+        btns.pack(fill="x")
+
+        def choose_default():
+            dlg.destroy()
+            # Mặc định: dùng bảng vẽ tích hợp sẵn
+            self.open_board()
+
+        def choose_app(app_name):
+            dlg.destroy()
+            self.launch_external_board(app_name)
+
+        ttk.Button(btns, text="Bảng vẽ mặc định", command=choose_default).pack(fill="x", pady=3)
+        ttk.Button(btns, text="Paint (Windows)", command=lambda: choose_app("paint")).pack(fill="x", pady=3)
+        ttk.Button(btns, text="EasiNote", command=lambda: choose_app("easinote")).pack(fill="x", pady=3)
+        ttk.Button(btns, text="Word", command=lambda: choose_app("word")).pack(fill="x", pady=3)
+        ttk.Button(btns, text="OneNote", command=lambda: choose_app("onenote")).pack(fill="x", pady=3)
+
+        # Nút hủy
+        ttk.Button(frm, text="Hủy", command=dlg.destroy).pack(pady=(10, 0))
+    #  mở paint
+    def launch_external_board(self, app_name: str):
+        """
+        Bước 2: hỗ trợ mở Paint. Các app khác sẽ triển khai ở bước sau.
+        """
+        try:
+            if app_name == "paint":
+                if platform.system() != "Windows":
+                    messagebox.showerror("Không hỗ trợ", "Paint chỉ khả dụng trên Windows.", parent=self)
+                    return
+                # Tìm mspaint.exe
+                paint_cmd = shutil.which("mspaint") or r"C:\Windows\System32\mspaint.exe"
+                if not os.path.exists(paint_cmd):
+                    messagebox.showerror("Không tìm thấy Paint", "Không tìm thấy mspaint trên máy.", parent=self)
+                    return
+                # Mở Paint (không chặn UI)
+                subprocess.Popen([paint_cmd])
+                return
+
+            # Mặc định chưa hỗ trợ app khác ở bước này
+            messagebox.showinfo("Chưa hỗ trợ", f"'{app_name}' sẽ được thêm ở bước tiếp theo.", parent=self)
+
+        except Exception as e:
+            messagebox.showerror("Lỗi mở ứng dụng", f"Không thể mở {app_name}:\n{e}", parent=self)
 
     def open_board(self, board_path=None):
         if not self.session_id:
@@ -291,4 +357,6 @@ class SessionDetailWindow(tk.Toplevel):
             on_saved=_on_board_saved
         )
         win.grab_set()
+#
+
 

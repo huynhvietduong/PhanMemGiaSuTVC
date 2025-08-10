@@ -9,13 +9,7 @@ from io import BytesIO
 from PIL import ImageChops
 from PIL import ImageFilter
 class DrawingBoardWindow(tk.Toplevel):
-    """
-    ✨ Bảng Vẽ Bài Giảng (Phiên bản đã sửa lỗi)
-    - Công cụ: pen, eraser, line, rect, oval, select
-    - Ảnh: dán từ clipboard (Ctrl+V), chọn/kéo/xoá
-    - Lưu lịch sử nét vẽ trong self.drawn_items để redraw khi mở lại
-    - Dùng INK_SCALE để vẽ mượt trên lớp mực (PIL)
-    """
+
 
     # 1) CLASS & LIFECYCLE / WINDOW MANAGEMENT/Nhóm 1 – Quản lý cửa sổ & vòng đời
     # Khởi tạo cửa sổ bảng vẽ, thiết lập UI, sự kiện, biến trạng thái
@@ -78,6 +72,8 @@ class DrawingBoardWindow(tk.Toplevel):
 
         self._build_toolbar()
         self._build_canvas()
+        # (Khởi tạo tính năng cuộn dọc cho Canvas)
+        self._init_canvas_scrolling()
 
         self.selected_image_id = None
         self.dragging_image = None
@@ -315,9 +311,54 @@ class DrawingBoardWindow(tk.Toplevel):
     # 2.2 Canvas
     # Khởi tạo vùng vẽ (canvas), gán sự kiện chuột/phím
     def _build_canvas(self):
-        self.canvas = tk.Canvas(self, bg=self.bg_color, highlightthickness=0)
-        self.canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        container = ttk.Frame(self)
+        container.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        # Canvas chính
+        self.canvas = tk.Canvas(container, bg=self.bg_color, highlightthickness=0)
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Scrollbar dọc
+        vbar = ttk.Scrollbar(container, orient="vertical", command=self.canvas.yview)
+        vbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.canvas.configure(yscrollcommand=vbar.set)
+
+        # Dùng để giữ tham chiếu ảnh
         self.canvas._image_refs = {}
+
+    # (Khởi tạo cuộn dọc cho Canvas: vùng vẽ ảo, mouse wheel, scrollregion)
+    def _init_canvas_scrolling(self):
+        # Chiều cao "ảo" để cuộn (có thể điều chỉnh sau)
+        self._virt_h = 4000  # px
+        # Chiều rộng ảo ban đầu bám theo bề ngang canvas thực
+        self._virt_w = max(1, self.canvas.winfo_width())
+
+        # Cập nhật scrollregion lần đầu
+        self._update_scrollregion()
+
+        # Bind cuộn bằng chuột (Windows/Mac)
+        self.canvas.bind("<MouseWheel>", self._on_mousewheel)
+        # Bind cho Linux (Button-4 lên, Button-5 xuống)
+        self.canvas.bind("<Button-4>", lambda e: self.canvas.yview_scroll(-1, "units"))
+        self.canvas.bind("<Button-5>", lambda e: self.canvas.yview_scroll(+1, "units"))
+
+    # (Cập nhật vùng scroll của Canvas theo kích thước ảo)
+    def _update_scrollregion(self):
+        # Mỗi khi đổi kích thước, đảm bảo chiều rộng ảo >= chiều rộng hiển thị
+        self._virt_w = max(self._virt_w, self.canvas.winfo_width())
+        self.canvas.configure(scrollregion=(0, 0, self._virt_w, self._virt_h))
+        # Khi vùng ảo thay đổi -> lớp mực cần khớp khi render
+        self._ensure_ink_layer()
+        self._refresh_ink_layer()
+
+    # (Xử lý lăn chuột cho Windows/Mac)
+    def _on_mousewheel(self, event):
+        # event.delta: bội số 120 trên Windows; âm = cuộn xuống
+        step = -1 if event.delta > 0 else 1
+        self.canvas.yview_scroll(step, "units")
+        # Sau khi cuộn, làm mới lớp mực hiển thị theo offset mới
+        self._refresh_ink_layer()
+
     # 2.3 Schedulers / after
     # Đặt một tác vụ chạy sau một khoảng thời gian
     def _schedule_after(self, key, ms, fn):
@@ -477,24 +518,37 @@ class DrawingBoardWindow(tk.Toplevel):
 
     # 4) INK LAYER (CORE RENDER)– Lớp mực (Ink Layer)
     # Đảm bảo có lớp mực RGBA, tạo mới nếu chưa có
+    # (Trả về kích thước scrollregion (w,h); fallback về kích thước canvas nếu chưa đặt)
+    def _get_scrollregion_size(self):
+        try:
+            sr = self.canvas.cget("scrollregion")
+            if not sr:
+                raise ValueError("no scrollregion")
+            parts = [int(float(x)) for x in sr.split()]
+            if len(parts) == 4:
+                x0, y0, x1, y1 = parts
+                w, h = max(1, x1 - x0), max(1, y1 - y0)
+                return w, h
+        except Exception:
+            pass
+        # fallback: dùng kích thước hiện tại của canvas
+        return max(1, self.canvas.winfo_width()), max(1, self.canvas.winfo_height())
+
+    # Cập nhật hiển thị lớp mực trên canvas
     def _ensure_ink_layer(self):
-        """Tạo/làm mới layer mực (RGBA) và đảm bảo nó luôn nằm trên cùng."""
         import PIL.Image as PILImage
         from PIL import ImageTk
 
         cw = max(1, self.canvas.winfo_width())
         ch = max(1, self.canvas.winfo_height())
+        vw, vh = self._get_scrollregion_size()  # kích thước "ảo" của toàn vùng vẽ
 
-        # Tạo ảnh RGBA trong suốt để chứa nét vẽ
         recreate_draw = False
-        if self._ink_img is None or self._ink_img.size != (cw * self.INK_SCALE, ch * self.INK_SCALE):
-            # Khi kích thước canvas thay đổi, tạo lại ảnh mực
-            self._ink_img = PILImage.new(
-                "RGBA", (cw * self.INK_SCALE, ch * self.INK_SCALE), (0, 0, 0, 0)
-            )
+        target_size = (vw * self.INK_SCALE, vh * self.INK_SCALE)
+        if self._ink_img is None or self._ink_img.size != target_size:
+            self._ink_img = PILImage.new("RGBA", target_size, (0, 0, 0, 0))
             recreate_draw = True
 
-            # Luôn đảm bảo _ink_draw tham chiếu đúng tới _ink_img hiện tại
         if (
                 recreate_draw
                 or self._ink_draw is None
@@ -504,23 +558,22 @@ class DrawingBoardWindow(tk.Toplevel):
             from PIL import ImageDraw
             self._ink_draw = ImageDraw.Draw(self._ink_img, "RGBA")
 
-        # Render xuống ảnh Tk và gắn lên canvas
-        downsample = self._ink_img.resize((cw, ch), resample=0)  # NEAREST để giữ alpha mịn đã tính sẵn
-        self._ink_tk = ImageTk.PhotoImage(downsample, master=self.canvas)
-
+        # Khởi tạo item image nếu chưa có; ảnh hiển thị thực sẽ gán trong _refresh_ink_layer()
         if self._ink_item_id is None or not self.canvas.type(self._ink_item_id):
-            # Tạo item ảnh cho layer mực và đặt tag 'ink'
+            blank = PILImage.new("RGBA", (1, 1), (0, 0, 0, 0))
+            self._ink_tk = ImageTk.PhotoImage(blank, master=self.canvas)
             self._ink_item_id = self.canvas.create_image(0, 0, anchor="nw", image=self._ink_tk, tags=("ink",))
         else:
-            self.canvas.itemconfigure(self._ink_item_id, image=self._ink_tk)
+            # sẽ cập nhật hình ảnh trong _refresh_ink_layer
+            pass
 
-        # 🔼 Quan trọng: đảm bảo layer mực luôn ở trên cùng
         try:
             self.canvas.tag_raise(self._ink_item_id)
             self.canvas.tag_raise("ink")
         except Exception:
             pass
-    # Cập nhật hiển thị lớp mực trên canvas
+
+    # (Render phần mực khớp vùng nhìn hiện tại dựa vào xview/yview)
     def _refresh_ink_layer(self):
         if not self.winfo_exists():
             return
@@ -529,19 +582,34 @@ class DrawingBoardWindow(tk.Toplevel):
             self.after(16, self._refresh_ink_layer)
             return
 
-        # Thu nhỏ theo premultiplied-alpha để nét mịn
-        view = self._resize_rgba_premultiplied(self._ink_img, (w, h))
+        x0f, x1f = self.canvas.xview()
+        y0f, y1f = self.canvas.yview()
+
+        s = self.INK_SCALE
+        img_w, img_h = self._ink_img.size
+
+        crop_w = max(1, int(w * s))
+        crop_h = max(1, int(h * s))
+        px0 = max(0, min(img_w - 1, int(x0f * img_w)))
+        py0 = max(0, min(img_h - 1, int(y0f * img_h)))
+        if px0 + crop_w > img_w: px0 = max(0, img_w - crop_w)
+        if py0 + crop_h > img_h: py0 = max(0, img_h - crop_h)
+
+        view_rgba = self._ink_img.crop((px0, py0, px0 + crop_w, py0 + crop_h))
+        view = self._resize_rgba_premultiplied(view_rgba, (w, h))
 
         from PIL import ImageTk
         self._ink_tk = ImageTk.PhotoImage(view, master=self.canvas)
         if self._ink_item_id is None:
-            self._ink_item_id = self.canvas.create_image(
-                0, 0, anchor="nw", image=self._ink_tk, tags=("ink",)
-            )
+            self._ink_item_id = self.canvas.create_image(0, 0, anchor="nw", image=self._ink_tk, tags=("ink",))
         else:
             self.canvas.itemconfig(self._ink_item_id, image=self._ink_tk)
 
-        # 🔼 ĐẢM BẢO LAYER MỰC Ở TRÊN CÙNG
+        # đặt ảnh đúng góc trên‑trái của viewport
+        vx0 = int(self.canvas.canvasx(0))
+        vy0 = int(self.canvas.canvasy(0))
+        self.canvas.coords(self._ink_item_id, vx0, vy0)
+
         try:
             self.canvas.tag_raise(self._ink_item_id)
             self.canvas.tag_raise("ink")
@@ -625,7 +693,8 @@ class DrawingBoardWindow(tk.Toplevel):
     # Sự kiện khi canvas thay đổi kích thước (gọi redraw)
     def _on_canvas_resize(self, event):
         self._schedule_after("__resize__", 16, self._rebuild_and_redraw)
-
+        # đảm bảo vùng cuộn bám theo chiều rộng mới
+        self._schedule_after("__resize_sr__", 20, self._update_scrollregion)
     # 5) INPUT HANDLERS (POINTER/KEYS)– Xử lý sự kiện chuột & phím
     # Xử lý nhấn chuột xuống
     def _pointer_press(self, event):
@@ -641,24 +710,27 @@ class DrawingBoardWindow(tk.Toplevel):
 
     # Hành động khi bắt đầu vẽ/chọn
     def on_press(self, event):
-        self.start_x, self.start_y = event.x, event.y
+        vx, vy = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
+        self.start_x, self.start_y = vx, vy
         self.canvas.delete("preview")
 
         if self.current_tool == "select":
-            if self._try_select_image(event.x, event.y):
+            if self._try_select_image(vx, vy):
                 self.dragging_image = self.selected_image_id
                 bbox = self.canvas.bbox(self.dragging_image)
-                self.drag_offset = (event.x - bbox[0], event.y - bbox[1])
+                self.drag_offset = (vx - bbox[0], vy - bbox[1])
         elif self.current_tool in ("pen", "eraser"):
-            self._pen_points = [(event.x, event.y)]
+            self._pen_points = [(vx, vy)]
 
     # Hành động khi đang vẽ/kéo ảnh
     def on_drag(self, event):
         if self.start_x is None or self.start_y is None:
             return
 
+        vx, vy = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
+
         if self.current_tool == "select" and self.dragging_image:
-            x, y = event.x - self.drag_offset[0], event.y - self.drag_offset[1]
+            x, y = vx - self.drag_offset[0], vy - self.drag_offset[1]
             self.canvas.coords(self.dragging_image, x, y)
             return
 
@@ -670,24 +742,20 @@ class DrawingBoardWindow(tk.Toplevel):
         self.canvas.delete("preview")
 
         if is_pen or is_eraser:
-            # ✨ FIX: Vẽ toàn bộ nét bút để có preview mượt mà, liền mạch
-            self._pen_points.append((event.x, event.y))
+            self._pen_points.append((vx, vy))
             if len(self._pen_points) > 1:
                 self.canvas.create_line(
-                    self._pen_points,
-                    fill=color,
-                    width=cur_w,
-                    tags=("preview",),
-                    **self.canvas_line_opts
+                    self._pen_points, fill=color, width=cur_w,
+                    tags=("preview",), **self.canvas_line_opts
                 )
         elif self.current_tool == "line":
-            self.canvas.create_line(self.start_x, self.start_y, event.x, event.y,
+            self.canvas.create_line(self.start_x, self.start_y, vx, vy,
                                     fill=self.draw_color, tags=("preview",))
         elif self.current_tool == "rect":
-            self.canvas.create_rectangle(self.start_x, self.start_y, event.x, event.y,
+            self.canvas.create_rectangle(self.start_x, self.start_y, vx, vy,
                                          outline=self.draw_color, tags=("preview",))
         elif self.current_tool == "oval":
-            self.canvas.create_oval(self.start_x, self.start_y, event.x, event.y,
+            self.canvas.create_oval(self.start_x, self.start_y, vx, vy,
                                     outline=self.draw_color, tags=("preview",))
 
         self.canvas.tag_raise("preview")
@@ -695,7 +763,10 @@ class DrawingBoardWindow(tk.Toplevel):
     # Hành động khi kết thúc vẽ/kéo
     def on_release(self, event):
         self.canvas.delete("preview")
-        if self.start_x is None: return
+        if self.start_x is None:
+            return
+
+        vx, vy = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
 
         if self.current_tool == "select":
             if self.dragging_image:
@@ -708,16 +779,16 @@ class DrawingBoardWindow(tk.Toplevel):
             return
 
         if self.current_tool in ("pen", "eraser"):
-            self.on_pen_up(event)
-        else:  # Shapes
+            self.on_pen_up(event)  # sẽ tự đổi toạ độ trong on_pen_up (Bước 1.4)
+        else:
             cur_w = 3
             data = {"color": self.draw_color, "width": cur_w}
             if self.current_tool == "line":
-                pts = [(self.start_x, self.start_y), (event.x, event.y)]
+                pts = [(self.start_x, self.start_y), (vx, vy)]
                 self._draw_line_points(pts, **data)
                 self.drawn_items.append(("line", {"points": pts, **data}))
             else:
-                shape_data = {"x1": self.start_x, "y1": self.start_y, "x2": event.x, "y2": event.y, **data}
+                shape_data = {"x1": self.start_x, "y1": self.start_y, "x2": vx, "y2": vy, **data}
                 if self.current_tool == "rect":
                     self._draw_rect(shape_data, commit=True)
                     self.drawn_items.append(("rect", shape_data))
@@ -832,24 +903,20 @@ class DrawingBoardWindow(tk.Toplevel):
         if not self._pen_points:
             return
 
-        # đảm bảo điểm cuối
-        if self._pen_points[-1] != (event.x, event.y):
-            self._pen_points.append((event.x, event.y))
+        vx, vy = self.canvas.canvasx(event.x), self.canvas.canvasy(event.y)
+        if self._pen_points[-1] != (vx, vy):
+            self._pen_points.append((vx, vy))
 
         if len(self._pen_points) > 1:
             if self.current_tool == "eraser":
                 width = self.eraser_width
                 self._erase_line_points(self._pen_points, width)
                 self._refresh_ink_layer()
-                # Đảm bảo tất cả ảnh xuống dưới mực
                 for meta in self._img_items.values():
                     if meta.get("cid"):
                         self._ensure_image_below_ink(meta["cid"])
-
                 self._commit_stroke(self._pen_points, (0, 0, 0, 0), width, mode="eraser")
             else:
-                # pen / highlighter
-                # luôn là bút thường (không còn highlighter)
                 alpha = 255
                 rgba = self._hex_to_rgba(self.draw_color, alpha=alpha)
                 width = self._get_pen_width()
