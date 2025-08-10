@@ -8,8 +8,6 @@ import json, base64, time
 from io import BytesIO
 from PIL import ImageChops
 from PIL import ImageFilter
-
-
 class DrawingBoardWindow(tk.Toplevel):
     """
     ✨ Bảng Vẽ Bài Giảng (Phiên bản đã sửa lỗi)
@@ -19,6 +17,8 @@ class DrawingBoardWindow(tk.Toplevel):
     - Dùng INK_SCALE để vẽ mượt trên lớp mực (PIL)
     """
 
+    # 1) CLASS & LIFECYCLE / WINDOW MANAGEMENT/Nhóm 1 – Quản lý cửa sổ & vòng đời
+    # Khởi tạo cửa sổ bảng vẽ, thiết lập UI, sự kiện, biến trạng thái
     def __init__(self, master=None, group_name=None, session_date=None,session_id=None, on_saved=None, board_path=None, lesson_dir=None):
         super().__init__(master)
         # Quản lý các after-callback để hủy an toàn khi đóng cửa sổ
@@ -120,19 +120,29 @@ class DrawingBoardWindow(tk.Toplevel):
         self._init_pages_model()
         self._init_pages_toolbar()  # nút Trang trước / Trang sau / Thêm / Xoá
         self._update_page_indicator()
-
-        self.on_saved = on_saved
-        self.session_id = session_id
         # thư mục chứa file board của buổi học
-        self._lesson_dir = lesson_dir or os.path.join(os.getcwd(), "data", "lessons", str(self.session_id or "unknown"))
-        self._current_board_path = None
         if board_path:
             try:
                 self.load_from_file(board_path)
                 self._current_board_path = board_path
             except Exception as e:
                 messagebox.showerror("Bảng vẽ", f"Không thể mở file bảng vẽ:\n{e}")
+    # Đóng cửa sổ, huỷ tất cả tác vụ after
+    def destroy(self):
+        """Đóng cửa sổ bảng vẽ an toàn."""
+        try:
+            self._cancel_all_afters()
+        except Exception:
+            pass
+        try:
+            # Nếu bạn có tài nguyên khác cần giải phóng thì xử lý tại đây
+            # ví dụ: self._ink_img = None, etc.
+            pass
+        except Exception:
+            pass
+        super().destroy()
 
+    # Bật/tắt chế độ toàn màn hình
     def toggle_fullscreen(self):
         """Bật/tắt toàn màn hình (ẩn viền, không còn nút min/max)."""
         try:
@@ -141,6 +151,7 @@ class DrawingBoardWindow(tk.Toplevel):
         except Exception:
             pass
 
+    # Chuyển giữa chế độ phóng to và kích thước trước đó
     def toggle_max_restore(self):
         """Chuyển nhanh giữa maximize và normal (không phải fullscreen)."""
         try:
@@ -152,6 +163,7 @@ class DrawingBoardWindow(tk.Toplevel):
             # Nếu WM không hỗ trợ 'zoomed' thì dùng fullscreen như phương án B
             self.toggle_fullscreen()
 
+    # Đảm bảo cửa sổ giữ trạng thái phóng to sau khi di chuyển
     def _ensure_maximized_after_move(self, event=None):
         """
         Khi cửa sổ vừa được kéo sang màn hình khác, nếu nó không còn ở trạng thái
@@ -172,187 +184,9 @@ class DrawingBoardWindow(tk.Toplevel):
         except Exception:
             pass
 
-    def _init_pages_model(self):
-        """Khởi tạo dữ liệu trang đầu tiên, gắn state hiện tại vào page[0]."""
-        # Nếu trước đó bạn đã khởi tạo _img_items/_cid_to_key ở __init__, vẫn OK.
-        # Ta gắn chúng vào model của page để mỗi trang có kho ảnh riêng.
-        self._img_items = getattr(self, "_img_items", {})
-        self._cid_to_key = getattr(self, "_cid_to_key", {})
-
-        first_page = {
-            "drawn_items": self.drawn_items,  # đang dùng list này rồi -> dùng trực tiếp
-            "images": self._img_items,  # dict ảnh hiện tại
-        }
-        self.pages.append(first_page)
-        self.current_page = 0
-
-    def _snapshot_current_page(self):
-        """Ghi lại state hiện tại vào self.pages[self.current_page]."""
-        from copy import deepcopy
-        p = self.pages[self.current_page]
-
-        # Sao chép 'vector' nét vẽ (list tuple dict)
-        p["drawn_items"] = deepcopy(self.drawn_items)
-
-        # Sao chép metadata ảnh (PIL + tọa độ). Không cần giữ cid canvas.
-        images_copy = {}
-        for k, meta in self._img_items.items():
-            images_copy[k] = {
-                "pil": meta["pil"].copy(),
-                "w": meta["w"], "h": meta["h"],
-                "x": meta["x"], "y": meta["y"],
-                "cid": None,  # sẽ tạo lại khi load
-            }
-        p["images"] = images_copy
-
-    def _load_page(self, index):
-        """Nạp trang index -> thay state và redraw lên canvas."""
-        if index < 0 or index >= len(self.pages):
-            return
-        self.current_page = index
-
-        # Gắn state của trang
-        p = self.pages[index]
-        self.drawn_items = p["drawn_items"]
-        self._img_items = p["images"]
-        self._cid_to_key = {}
-
-        # Xoá hết items rồi dựng lại
-        self.canvas.delete("all")
-        self._ink_item_id = None
-
-        self._ensure_ink_layer()
-        # Xoá sạch mực cũ
-        self._ink_img.paste((0, 0, 0, 0), (0, 0, *self._ink_img.size))
-
-        # Vẽ lại các nét
-        for item_type, data in self.drawn_items:
-            if item_type == "line":
-                if "rgba" in data:
-                    self._draw_line_points_rgba(data["points"], tuple(data["rgba"]), data.get("width", 3))
-                else:
-                    self._draw_line_points(data["points"], color=data.get("color"), width=data.get("width", 3))
-            elif item_type == "rect":
-                self._draw_rect(data, commit=True)
-            elif item_type == "oval":
-                self._draw_oval(data, commit=True)
-
-        # Vẽ lại ảnh -> tạo tk image + cid, rồi HẠ ẢNH XUỐNG & NÂNG INK LÊN
-        from PIL import ImageTk
-        for key, meta in self._img_items.items():
-            try:
-                tk_img = ImageTk.PhotoImage(meta["pil"], master=self.canvas)
-                cid = self.canvas.create_image(meta["x"], meta["y"], anchor="nw", image=tk_img)
-                # lưu tham chiếu & map
-                if not hasattr(self.canvas, "_image_refs"):
-                    self.canvas._image_refs = {}
-                self.canvas._image_refs[cid] = tk_img
-                meta["cid"] = cid
-                self._cid_to_key[cid] = key
-
-                # 🔽 đảm bảo ảnh nằm dưới lớp mực
-                self._ensure_image_below_ink(cid)
-            except Exception:
-                pass
-
-        self._refresh_ink_layer()
-        self._update_page_indicator()
-        self.selected_image_id = None
-
-    def _hex_to_rgba(self, color_hex: str, alpha: int = 255):
-        try:
-            r, g, b = self.winfo_rgb(color_hex)
-            return (r // 256, g // 256, b // 256, alpha)
-        except tk.TclError:
-            # fallback: đen đục
-            return (0, 0, 0, alpha)
-
-    def _draw_line_points_rgba(self, points, rgba, width):
-        """
-        Vẽ line trực tiếp lên ink layer bằng RGBA đã biết.
-        Nếu alpha == 0 => coi là tẩy (xóa thật sự bằng mask), không vẽ màu trong suốt.
-        """
-        if not points or len(points) < 2:
-            return
-
-        # Nếu là "tẩy": alpha = 0
-        if rgba is not None and len(rgba) >= 4 and int(rgba[3]) == 0:
-            self._erase_line_points(points, width)
-            return
-
-        self._ensure_ink_layer()
-        s = self.INK_SCALE
-        scaled = [(int(x * s), int(y * s)) for (x, y) in points]
-        self._ink_draw.line(
-            scaled,
-            fill=tuple(int(v) for v in rgba),
-            width=max(1, int(width * s))
-        )
-
-    def _erase_line_points(self, points, width):
-        """
-        Xoá sạch (clear alpha) dọc theo polyline `points` với độ dày `width`.
-        - Vẽ line mask dày hơn một chút so với nét gốc (expand)
-        - Quét cọ tròn tại từng điểm để không bị hở khi rê nhanh
-        - Dãn (dilate) mask 1 bước để ăn trọn viền anti‑alias
-        """
-        if not points or len(points) < 2:
-            return
-
-        self._ensure_ink_layer()
-        s = self.INK_SCALE
-
-        # 1) Tạo mask đơn kênh: 0 = giữ, 255 = xóa
-        mask = Image.new("L", self._ink_img.size, 0)
-        mdraw = ImageDraw.Draw(mask)
-
-        # 2) Nới rộng một chút so với bề rộng tẩy gốc
-        expand = int(2 * s)  # thêm ~2px ở không gian gốc
-        brush_w = max(1, int(width * s) + expand)  # bề rộng nét trên mask
-        radius = brush_w // 2 + 1
-
-        scaled = [(int(x * s), int(y * s)) for (x, y) in points]
-
-        # 3) Vẽ polyline mask
-        mdraw.line(scaled, fill=255, width=brush_w)
-
-        # 4) Quét cọ tròn tại mọi điểm để bịt khe hở giữa các mẫu di chuyển
-        for x, y in scaled:
-            mdraw.ellipse([x - radius, y - radius, x + radius, y + radius], fill=255)
-
-        # 5) Dãn mask thêm 1 bước để phủ hết phần anti‑alias ở rìa
-        try:
-            from PIL import ImageFilter
-            # Kích thước nhân lọc phải là số lẻ
-            k = max(3, (int(0.75 * s) // 2) * 2 + 1)
-            mask = mask.filter(ImageFilter.MaxFilter(size=k))
-        except Exception:
-            pass  # Nếu thiếu ImageFilter vẫn xài được
-
-        # 6) Thực hiện xoá: dán vùng trong suốt với mask
-        self._ink_img.paste((0, 0, 0, 0), (0, 0), mask)
-
-    # ---------------- UI ----------------
-    def _schedule_after(self, key, ms, fn):
-        old_id = self._afters.get(key)
-        if old_id:
-            self.after_cancel(old_id)
-        self._afters[key] = self.after(ms, fn)
-
-    def _cancel_all_afters(self):
-        """Hủy tất cả after callbacks nếu có."""
-        try:
-            if not hasattr(self, "_afters") or not self._afters:
-                return
-            for aid in list(self._afters.values()):
-                try:
-                    self.after_cancel(aid)
-                except Exception:
-                    pass
-            self._afters.clear()
-        except Exception:
-            pass
-
+    # 2) UI CONSTRUCTION/Xây dựng UI
+    # 2.1 Toolbar & Pages toolbar
+    # Tạo thanh công cụ chính với nút, màu, chọn công cụ
     def _build_toolbar(self):
         """
         Toolbar có thể CUỘN NGANG:
@@ -465,6 +299,51 @@ class DrawingBoardWindow(tk.Toplevel):
 
         self._set_tool("pen")
 
+    # Khởi tạo dữ liệu các trang trắng ban đầu.
+    def _init_pages_model(self):
+        """Khởi tạo dữ liệu trang đầu tiên, gắn state hiện tại vào page[0]."""
+        # Nếu trước đó bạn đã khởi tạo _img_items/_cid_to_key ở __init__, vẫn OK.
+        # Ta gắn chúng vào model của page để mỗi trang có kho ảnh riêng.
+        self._img_items = getattr(self, "_img_items", {})
+        self._cid_to_key = getattr(self, "_cid_to_key", {})
+
+        first_page = {
+            "drawn_items": self.drawn_items,  # đang dùng list này rồi -> dùng trực tiếp
+            "images": self._img_items,  # dict ảnh hiện tại
+        }
+        self.pages.append(first_page)
+        self.current_page = 0
+    # 2.2 Canvas
+    # Khởi tạo vùng vẽ (canvas), gán sự kiện chuột/phím
+    def _build_canvas(self):
+        self.canvas = tk.Canvas(self, bg=self.bg_color, highlightthickness=0)
+        self.canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        self.canvas._image_refs = {}
+    # 2.3 Schedulers / after
+    # Đặt một tác vụ chạy sau một khoảng thời gian
+    def _schedule_after(self, key, ms, fn):
+        old_id = self._afters.get(key)
+        if old_id:
+            self.after_cancel(old_id)
+        self._afters[key] = self.after(ms, fn)
+
+    # Huỷ tất cả tác vụ after đang chờ
+    def _cancel_all_afters(self):
+        """Hủy tất cả after callbacks nếu có."""
+        try:
+            if not hasattr(self, "_afters") or not self._afters:
+                return
+            for aid in list(self._afters.values()):
+                try:
+                    self.after_cancel(aid)
+                except Exception:
+                    pass
+            self._afters.clear()
+        except Exception:
+            pass
+
+    # 3) STATE & PAGE MANAGEMENT– Quản lý trang (Pages)
+    # Tạo thanh điều hướng trang (trước, sau, thêm, xóa)
     def _init_pages_toolbar(self):
         """Thêm cụm nút điều hướng TRANG vào đúng thanh công cụ cuộn."""
         # Thanh công cụ thật đã được lưu ở self._toolbar_inner trong _build_toolbar
@@ -483,6 +362,82 @@ class DrawingBoardWindow(tk.Toplevel):
         self._page_label_var = tk.StringVar(value="Trang 1/1")
         ttk.Label(bar, textvariable=self._page_label_var).pack(side=tk.LEFT, padx=10)
 
+    # Lưu trạng thái hiện tại của trang (nét vẽ + ảnh)
+    def _snapshot_current_page(self):
+        """Ghi lại state hiện tại vào self.pages[self.current_page]."""
+        from copy import deepcopy
+        p = self.pages[self.current_page]
+
+        # Sao chép 'vector' nét vẽ (list tuple dict)
+        p["drawn_items"] = deepcopy(self.drawn_items)
+
+        # Sao chép metadata ảnh (PIL + tọa độ). Không cần giữ cid canvas.
+        images_copy = {}
+        for k, meta in self._img_items.items():
+            images_copy[k] = {
+                "pil": meta["pil"].copy(),
+                "w": meta["w"], "h": meta["h"],
+                "x": meta["x"], "y": meta["y"],
+                "cid": None,  # sẽ tạo lại khi load
+            }
+        p["images"] = images_copy
+
+    # Tải dữ liệu một trang vào giao diện để hiển thị
+    def _load_page(self, index):
+        """Nạp trang index -> thay state và redraw lên canvas."""
+        if index < 0 or index >= len(self.pages):
+            return
+        self.current_page = index
+
+        # Gắn state của trang
+        p = self.pages[index]
+        self.drawn_items = p["drawn_items"]
+        self._img_items = p["images"]
+        self._cid_to_key = {}
+
+        # Xoá hết items rồi dựng lại
+        self.canvas.delete("all")
+        self._ink_item_id = None
+
+        self._ensure_ink_layer()
+        # Xoá sạch mực cũ
+        self._ink_img.paste((0, 0, 0, 0), (0, 0, *self._ink_img.size))
+
+        # Vẽ lại các nét
+        for item_type, data in self.drawn_items:
+            if item_type == "line":
+                if "rgba" in data:
+                    self._draw_line_points_rgba(data["points"], tuple(data["rgba"]), data.get("width", 3))
+                else:
+                    self._draw_line_points(data["points"], color=data.get("color"), width=data.get("width", 3))
+            elif item_type == "rect":
+                self._draw_rect(data, commit=True)
+            elif item_type == "oval":
+                self._draw_oval(data, commit=True)
+
+        # Vẽ lại ảnh -> tạo tk image + cid, rồi HẠ ẢNH XUỐNG & NÂNG INK LÊN
+        from PIL import ImageTk
+        for key, meta in self._img_items.items():
+            try:
+                tk_img = ImageTk.PhotoImage(meta["pil"], master=self.canvas)
+                cid = self.canvas.create_image(meta["x"], meta["y"], anchor="nw", image=tk_img)
+                # lưu tham chiếu & map
+                if not hasattr(self.canvas, "_image_refs"):
+                    self.canvas._image_refs = {}
+                self.canvas._image_refs[cid] = tk_img
+                meta["cid"] = cid
+                self._cid_to_key[cid] = key
+
+                # 🔽 đảm bảo ảnh nằm dưới lớp mực
+                self._ensure_image_below_ink(cid)
+            except Exception:
+                pass
+
+        self._refresh_ink_layer()
+        self._update_page_indicator()
+        self.selected_image_id = None
+
+    # Thêm một trang mới trắng
     def add_page(self):
         """Thêm trang mới (trống) và chuyển tới."""
         self._snapshot_current_page()
@@ -490,6 +445,7 @@ class DrawingBoardWindow(tk.Toplevel):
         self.pages.append(new_page)
         self._load_page(len(self.pages) - 1)
 
+    # Xóa trang hiện tại
     def delete_page(self):
         """Xoá trang hiện tại. Luôn giữ lại ≥ 1 trang."""
         if len(self.pages) == 1:
@@ -500,6 +456,7 @@ class DrawingBoardWindow(tk.Toplevel):
         # Chuyển tới trang trước (nếu xoá trang cuối thì cũng OK)
         self._load_page(max(0, self.current_page - 1))
 
+    # Chuyển sang trang tiếp theo
     def next_page(self):
         self._snapshot_current_page()
         idx = self.current_page + 1
@@ -507,6 +464,7 @@ class DrawingBoardWindow(tk.Toplevel):
             return
         self._load_page(idx)
 
+    # Quay lại trang trước đó
     def prev_page(self):
         self._snapshot_current_page()
         idx = self.current_page - 1
@@ -514,103 +472,12 @@ class DrawingBoardWindow(tk.Toplevel):
             return
         self._load_page(idx)
 
+    # Cập nhật số thứ tự trang đang xem
     def _update_page_indicator(self):
         self._page_label_var.set(f"Trang {self.current_page + 1}/{max(1, len(self.pages))}")
 
-    # ✨ FIX: Hợp nhất các hàm trùng lặp và logic không nhất quán
-    def _set_pen_color(self, color_hex: str):
-        """Đặt màu bút và cập nhật ô xem trước nếu có."""
-        self.draw_color = color_hex
-        try:
-            if hasattr(self, "_color_preview") and self._color_preview.winfo_exists():
-                self._color_preview.configure(bg=self.draw_color)
-        except tk.TclError:
-            pass
-        self._set_tool("pen")
-
-    def _choose_custom_color(self):
-        """
-        Mở hộp thoại chọn màu làm *con* của Bảng vẽ để không làm cửa sổ khác bật lên.
-        Sau khi chọn xong, đưa Bảng vẽ trở lại phía trước.
-        """
-        # Tạm thời đưa Bảng vẽ lên trên để hộp thoại xuất hiện đúng chỗ
-        try:
-            self.attributes("-topmost", True)
-        except Exception:
-            pass
-
-        try:
-            # Gắn parent=self để hộp thoại modal theo Bảng vẽ
-            color = colorchooser.askcolor(
-                initialcolor=self.draw_color,
-                title="Chọn màu bút",
-                parent=self
-            )
-        finally:
-            # Trả lại trạng thái topmost
-            try:
-                self.attributes("-topmost", False)
-            except Exception:
-                pass
-
-        # Cập nhật màu nếu người dùng bấm OK
-        if color and color[1]:
-            self._set_pen_color(color[1])
-
-        # Đảm bảo Bảng vẽ được focus và nằm lên trên
-        try:
-            self.lift()
-            self.focus_force()
-        except Exception:
-            pass
-
-    def _on_eraser_width_change(self):
-        # đồng bộ cả 2 biến
-        self.eraser_width = int(self.eraser_width_var.get())
-        try:
-            self._eraser_scale.set(self.eraser_width)
-        except Exception:
-            pass
-
-    def _set_eraser_from_scale(self, v):
-        self.eraser_width_var.set(int(float(v)))
-        self._on_eraser_width_change()
-
-    def _adjust_eraser_width(self, delta):
-        new_w = max(2, min(120, self._get_eraser_width() + int(delta)))
-        self.eraser_width_var.set(new_w)
-        self._on_eraser_width_change()
-
-    def _get_eraser_width(self):
-        """Lấy kích thước tẩy hiện hành từ biến trạng thái, fallback về self.eraser_width."""
-        try:
-            return int(self.eraser_width_var.get())
-        except Exception:
-            return int(getattr(self, "eraser_width", 25))
-
-    def _build_canvas(self):
-        self.canvas = tk.Canvas(self, bg=self.bg_color, highlightthickness=0)
-        self.canvas.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
-        self.canvas._image_refs = {}
-
-    def _set_tool(self, tool):
-        self.current_tool = tool
-        # Cập nhật giao diện (ví dụ: làm nổi nút đang chọn) có thể thêm ở đây
-
-    # --------------- Ink Layer helpers ---------------
-    def _on_eraser_width_change(self):
-        """Cập nhật khi đổi kích thước tẩy từ menu."""
-        try:
-            self.eraser_width = self.eraser_width_var.get()
-        except (tk.TclError, ValueError):
-            self.eraser_width = 25
-
-    def _adjust_eraser_width(self, delta):
-        """Tăng/giảm kích thước tẩy bằng phím tắt."""
-        new_w = max(2, min(100, self.eraser_width_var.get() + delta))
-        self.eraser_width_var.set(new_w)
-        self._on_eraser_width_change()
-
+    # 4) INK LAYER (CORE RENDER)– Lớp mực (Ink Layer)
+    # Đảm bảo có lớp mực RGBA, tạo mới nếu chưa có
     def _ensure_ink_layer(self):
         """Tạo/làm mới layer mực (RGBA) và đảm bảo nó luôn nằm trên cùng."""
         import PIL.Image as PILImage
@@ -654,7 +521,35 @@ class DrawingBoardWindow(tk.Toplevel):
             self.canvas.tag_raise("ink")
         except Exception:
             pass
+    # Cập nhật hiển thị lớp mực trên canvas
+    def _refresh_ink_layer(self):
+        if not self.winfo_exists():
+            return
+        w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
+        if w <= 1 or h <= 1:
+            self.after(16, self._refresh_ink_layer)
+            return
 
+        # Thu nhỏ theo premultiplied-alpha để nét mịn
+        view = self._resize_rgba_premultiplied(self._ink_img, (w, h))
+
+        from PIL import ImageTk
+        self._ink_tk = ImageTk.PhotoImage(view, master=self.canvas)
+        if self._ink_item_id is None:
+            self._ink_item_id = self.canvas.create_image(
+                0, 0, anchor="nw", image=self._ink_tk, tags=("ink",)
+            )
+        else:
+            self.canvas.itemconfig(self._ink_item_id, image=self._ink_tk)
+
+        # 🔼 ĐẢM BẢO LAYER MỰC Ở TRÊN CÙNG
+        try:
+            self.canvas.tag_raise(self._ink_item_id)
+            self.canvas.tag_raise("ink")
+        except Exception:
+            pass
+
+    # Thu nhỏ ảnh RGBA với premultiplied alpha cho mượt
     def _resize_rgba_premultiplied(self, img_rgba, size):
         """
         Thu nhỏ RGBA theo kiểu premultiplied alpha để tránh viền mờ ở rìa nét.
@@ -694,33 +589,7 @@ class DrawingBoardWindow(tk.Toplevel):
 
         return Image.merge("RGBA", (new_r, new_g, new_b, new_a))
 
-    def _refresh_ink_layer(self):
-        if not self.winfo_exists():
-            return
-        w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
-        if w <= 1 or h <= 1:
-            self.after(16, self._refresh_ink_layer)
-            return
-
-        # Thu nhỏ theo premultiplied-alpha để nét mịn
-        view = self._resize_rgba_premultiplied(self._ink_img, (w, h))
-
-        from PIL import ImageTk
-        self._ink_tk = ImageTk.PhotoImage(view, master=self.canvas)
-        if self._ink_item_id is None:
-            self._ink_item_id = self.canvas.create_image(
-                0, 0, anchor="nw", image=self._ink_tk, tags=("ink",)
-            )
-        else:
-            self.canvas.itemconfig(self._ink_item_id, image=self._ink_tk)
-
-        # 🔼 ĐẢM BẢO LAYER MỰC Ở TRÊN CÙNG
-        try:
-            self.canvas.tag_raise(self._ink_item_id)
-            self.canvas.tag_raise("ink")
-        except Exception:
-            pass
-
+    # Đảm bảo ảnh nằm dưới lớp mực
     def _ensure_image_below_ink(self, cid: int):
         """Hạ ảnh canvas item `cid` xuống dưới lớp mực, rồi nâng lớp mực lên."""
         try:
@@ -731,17 +600,47 @@ class DrawingBoardWindow(tk.Toplevel):
         except Exception:
             pass
 
-    # --------------- Core Events ---------------
+    # Vẽ lại toàn bộ nét + ảnh từ dữ liệu trang
+    def _rebuild_and_redraw(self):
+        self.canvas.delete("all")
+        self._ink_item_id = None
+        self._ensure_ink_layer()
+        # xóa sạch ink
+        self._ink_img.paste((0, 0, 0, 0), (0, 0, *self._ink_img.size))
 
+        for item_type, data in self.drawn_items:
+            if item_type == "line":
+                rgba = tuple(data.get("rgba", (0, 0, 0, 255)))
+                if data.get("mode") == "eraser" or (len(rgba) >= 4 and int(rgba[3]) == 0):
+                    self._erase_line_points(data["points"], data.get("width", 3))
+                else:
+                    self._draw_line_points_rgba(data["points"], rgba, data.get("width", 3))
+            elif item_type == "rect":
+                self._draw_rect(data, commit=True)
+            elif item_type == "oval":
+                self._draw_oval(data, commit=True)
+
+        self._refresh_ink_layer()
+        self._redraw_images_layer()
+
+    # Sự kiện khi canvas thay đổi kích thước (gọi redraw)
+    def _on_canvas_resize(self, event):
+        self._schedule_after("__resize__", 16, self._rebuild_and_redraw)
+
+    # 5) INPUT HANDLERS (POINTER/KEYS)– Xử lý sự kiện chuột & phím
+    # Xử lý nhấn chuột xuống
     def _pointer_press(self, event):
         self.on_press(event)
 
+    # Xử lý kéo chuột
     def _pointer_drag(self, event):
         self.on_drag(event)
 
+    # Xử lý thả chuột
     def _pointer_release(self, event):
         self.on_release(event)
 
+    # Hành động khi bắt đầu vẽ/chọn
     def on_press(self, event):
         self.start_x, self.start_y = event.x, event.y
         self.canvas.delete("preview")
@@ -754,6 +653,7 @@ class DrawingBoardWindow(tk.Toplevel):
         elif self.current_tool in ("pen", "eraser"):
             self._pen_points = [(event.x, event.y)]
 
+    # Hành động khi đang vẽ/kéo ảnh
     def on_drag(self, event):
         if self.start_x is None or self.start_y is None:
             return
@@ -793,6 +693,7 @@ class DrawingBoardWindow(tk.Toplevel):
 
         self.canvas.tag_raise("preview")
 
+    # Hành động khi kết thúc vẽ/kéo
     def on_release(self, event):
         self.canvas.delete("preview")
         if self.start_x is None: return
@@ -828,8 +729,97 @@ class DrawingBoardWindow(tk.Toplevel):
 
         self.start_x = self.start_y = None
 
-    # --------------- Pen/Eraser ---------------
+    # 6) PEN / ERASER (STROKES)– Bút & Tẩy
+    # Chuyển mã màu hex thành tuple RGBA
+    def _hex_to_rgba(self, color_hex: str, alpha: int = 255):
+        try:
+            r, g, b = self.winfo_rgb(color_hex)
+            return (r // 256, g // 256, b // 256, alpha)
+        except tk.TclError:
+            # fallback: đen đục
+            return (0, 0, 0, alpha)
 
+    # Chọn công cụ hiện tại (bút, tẩy, hình học)
+    def _set_tool(self, tool):
+        self.current_tool = tool
+        # Cập nhật giao diện (ví dụ: làm nổi nút đang chọn) có thể thêm ở đây
+
+    # Đặt màu cho bút vẽ
+    def _set_pen_color(self, color_hex: str):
+        """Đặt màu bút và cập nhật ô xem trước nếu có."""
+        self.draw_color = color_hex
+        try:
+            if hasattr(self, "_color_preview") and self._color_preview.winfo_exists():
+                self._color_preview.configure(bg=self.draw_color)
+        except tk.TclError:
+            pass
+        self._set_tool("pen")
+
+    # Mở hộp thoại chọn màu tùy chỉnh
+    def _choose_custom_color(self):
+        """
+        Mở hộp thoại chọn màu làm *con* của Bảng vẽ để không làm cửa sổ khác bật lên.
+        Sau khi chọn xong, đưa Bảng vẽ trở lại phía trước.
+        """
+        # Tạm thời đưa Bảng vẽ lên trên để hộp thoại xuất hiện đúng chỗ
+        try:
+            self.attributes("-topmost", True)
+        except Exception:
+            pass
+
+        try:
+            # Gắn parent=self để hộp thoại modal theo Bảng vẽ
+            color = colorchooser.askcolor(
+                initialcolor=self.draw_color,
+                title="Chọn màu bút",
+                parent=self
+            )
+        finally:
+            # Trả lại trạng thái topmost
+            try:
+                self.attributes("-topmost", False)
+            except Exception:
+                pass
+
+        # Cập nhật màu nếu người dùng bấm OK
+        if color and color[1]:
+            self._set_pen_color(color[1])
+
+        # Đảm bảo Bảng vẽ được focus và nằm lên trên
+        try:
+            self.lift()
+            self.focus_force()
+        except Exception:
+            pass
+
+    # Cập nhật độ rộng tẩy khi người dùng chỉnh
+    def _on_eraser_width_change(self):
+        """Cập nhật khi đổi kích thước tẩy từ menu."""
+        try:
+            self.eraser_width = self.eraser_width_var.get()
+        except (tk.TclError, ValueError):
+            self.eraser_width = 25
+
+    # Thay đổi độ rộng tẩy từ thanh trượt
+    def _set_eraser_from_scale(self, v):
+        self.eraser_width_var.set(int(float(v)))
+        self._on_eraser_width_change()
+
+    # Tăng/giảm độ rộng tẩy bằng phím tắt
+    def _adjust_eraser_width(self, delta):
+        new_w = max(2, min(120, self._get_eraser_width() + int(delta)))
+        self.eraser_width_var.set(new_w)
+        self._on_eraser_width_change()
+
+    # Lấy độ rộng tẩy hiện tại
+    def _get_eraser_width(self):
+        """Lấy kích thước tẩy hiện hành từ biến trạng thái, fallback về self.eraser_width."""
+        try:
+            return int(self.eraser_width_var.get())
+        except Exception:
+            return int(getattr(self, "eraser_width", 25))
+
+    # Kết thúc một stroke bút, lưu vào dữ liệu trang
     def on_pen_up(self, event):
         if not self._pen_points:
             return
@@ -862,6 +852,7 @@ class DrawingBoardWindow(tk.Toplevel):
         self._pen_points = []
         self.canvas.delete("preview")
 
+    # Ghi nét bút vào layer mực
     def _commit_stroke(self, points, rgba, width, mode):
         # Lưu đúng dữ liệu để redraw bền vững
         self.drawn_items.append((
@@ -874,8 +865,73 @@ class DrawingBoardWindow(tk.Toplevel):
             }
         ))
 
-    # --------------- Primitive Draw to Ink ---------------
+    # Vẽ đường (RGBA) trực tiếp vào ảnh mực
+    def _draw_line_points_rgba(self, points, rgba, width):
+        """
+        Vẽ line trực tiếp lên ink layer bằng RGBA đã biết.
+        Nếu alpha == 0 => coi là tẩy (xóa thật sự bằng mask), không vẽ màu trong suốt.
+        """
+        if not points or len(points) < 2:
+            return
 
+        # Nếu là "tẩy": alpha = 0
+        if rgba is not None and len(rgba) >= 4 and int(rgba[3]) == 0:
+            self._erase_line_points(points, width)
+            return
+
+        self._ensure_ink_layer()
+        s = self.INK_SCALE
+        scaled = [(int(x * s), int(y * s)) for (x, y) in points]
+        self._ink_draw.line(
+            scaled,
+            fill=tuple(int(v) for v in rgba),
+            width=max(1, int(width * s))
+        )
+
+    # Xóa mực theo đường đi của tẩy
+    def _erase_line_points(self, points, width):
+        """
+        Xoá sạch (clear alpha) dọc theo polyline `points` với độ dày `width`.
+        - Vẽ line mask dày hơn một chút so với nét gốc (expand)
+        - Quét cọ tròn tại từng điểm để không bị hở khi rê nhanh
+        - Dãn (dilate) mask 1 bước để ăn trọn viền anti‑alias
+        """
+        if not points or len(points) < 2:
+            return
+
+        self._ensure_ink_layer()
+        s = self.INK_SCALE
+
+        # 1) Tạo mask đơn kênh: 0 = giữ, 255 = xóa
+        mask = Image.new("L", self._ink_img.size, 0)
+        mdraw = ImageDraw.Draw(mask)
+
+        # 2) Nới rộng một chút so với bề rộng tẩy gốc
+        expand = int(2 * s)  # thêm ~2px ở không gian gốc
+        brush_w = max(1, int(width * s) + expand)  # bề rộng nét trên mask
+        radius = brush_w // 2 + 1
+
+        scaled = [(int(x * s), int(y * s)) for (x, y) in points]
+
+        # 3) Vẽ polyline mask
+        mdraw.line(scaled, fill=255, width=brush_w)
+
+        # 4) Quét cọ tròn tại mọi điểm để bịt khe hở giữa các mẫu di chuyển
+        for x, y in scaled:
+            mdraw.ellipse([x - radius, y - radius, x + radius, y + radius], fill=255)
+
+        # 5) Dãn mask thêm 1 bước để phủ hết phần anti‑alias ở rìa
+        try:
+            from PIL import ImageFilter
+            # Kích thước nhân lọc phải là số lẻ
+            k = max(3, (int(0.75 * s) // 2) * 2 + 1)
+            mask = mask.filter(ImageFilter.MaxFilter(size=k))
+        except Exception:
+            pass  # Nếu thiếu ImageFilter vẫn xài được
+
+        # 6) Thực hiện xoá: dán vùng trong suốt với mask
+        self._ink_img.paste((0, 0, 0, 0), (0, 0), mask)
+    # Vẽ đường xem trước trên canvas
     def _draw_line_points(self, points, color=None, width=3, rgba=None, mode=None):
         """
         Wrapper tương thích ngược:
@@ -890,6 +946,8 @@ class DrawingBoardWindow(tk.Toplevel):
 
         self._draw_line_points_rgba(points, fill_rgba, width)
 
+    # 7) SHAPES (LINE / RECT / OVAL COMMIT) – Hình học
+    # Vẽ hình chữ nhật trên preview
     def _draw_rect(self, data, commit=False):
         x1, y1, x2, y2 = data["x1"], data["y1"], data["x2"], data["y2"]
         color, w = data["color"], data["width"]
@@ -901,6 +959,7 @@ class DrawingBoardWindow(tk.Toplevel):
                 outline=color, width=max(1, int(w * s))
             )
 
+    # Vẽ hình oval (ellipse) trên preview
     def _draw_oval(self, data, commit=False):
         x1, y1, x2, y2 = data["x1"], data["y1"], data["x2"], data["y2"]
         color, w = data["color"], data["width"]
@@ -912,33 +971,8 @@ class DrawingBoardWindow(tk.Toplevel):
                 outline=color, width=max(1, int(w * s))
             )
 
-    def _rebuild_and_redraw(self):
-        self.canvas.delete("all")
-        self._ink_item_id = None
-        self._ensure_ink_layer()
-        # xóa sạch ink
-        self._ink_img.paste((0, 0, 0, 0), (0, 0, *self._ink_img.size))
-
-        for item_type, data in self.drawn_items:
-            if item_type == "line":
-                rgba = tuple(data.get("rgba", (0, 0, 0, 255)))
-                if data.get("mode") == "eraser" or (len(rgba) >= 4 and int(rgba[3]) == 0):
-                    self._erase_line_points(data["points"], data.get("width", 3))
-                else:
-                    self._draw_line_points_rgba(data["points"], rgba, data.get("width", 3))
-            elif item_type == "rect":
-                self._draw_rect(data, commit=True)
-            elif item_type == "oval":
-                self._draw_oval(data, commit=True)
-
-        self._refresh_ink_layer()
-        self._redraw_images_layer()
-
-    def _on_canvas_resize(self, event):
-        self._rebuild_and_redraw()
-
-    # --------------- Image Handling (No changes needed here) ---------------
-
+    # 8) IMAGES LAYER (BMP)– Quản lý ảnh
+    # Dán ảnh từ clipboard vào canvas
     def paste_from_clipboard(self, event=None):
         from PIL import ImageGrab, ImageTk
         try:
@@ -972,6 +1006,7 @@ class DrawingBoardWindow(tk.Toplevel):
         # 🔽 Ảnh xuống dưới, ink lên trên
         self._ensure_image_below_ink(cid)
 
+    # Chèn ảnh từ file vào canvas
     def insert_image_from_file(self):
         from tkinter import filedialog, messagebox
         from PIL import Image, ImageTk
@@ -1006,6 +1041,7 @@ class DrawingBoardWindow(tk.Toplevel):
         # 🔽 Ảnh xuống dưới, ink lên trên
         self._ensure_image_below_ink(cid)
 
+    # Thêm ảnh PIL vào trang, tạo object canvas
     def _insert_pil_image(self, pil_image: Image.Image, x=0, y=0):
         tk_img = ImageTk.PhotoImage(pil_image, master=self.canvas)
         cid = self.canvas.create_image(x, y, anchor="nw", image=tk_img)
@@ -1021,20 +1057,7 @@ class DrawingBoardWindow(tk.Toplevel):
         self.clear_selection()
         self.selected_image_id = cid
 
-    def _redraw_images_layer(self):
-        for key, meta in list(self._img_items.items()):
-            pil, x, y, cid = meta["pil"], meta["x"], meta["y"], meta["cid"]
-            try:
-                self.canvas.coords(cid)  # check if item exists
-                self.canvas.coords(cid, x, y)
-            except tk.TclError:  # item deleted, recreate
-                tk_img = ImageTk.PhotoImage(pil, master=self.canvas)
-                new_cid = self.canvas.create_image(x, y, anchor="nw", image=tk_img)
-                self.canvas._image_refs[new_cid] = tk_img
-                meta["cid"] = new_cid
-                self._cid_to_key[new_cid] = key
-                if self.selected_image_id == cid: self.selected_image_id = new_cid
-
+    # Kiểm tra xem click chuột có chọn ảnh nào không
     def _try_select_image(self, x, y):
         items = self.canvas.find_overlapping(x, y, x, y)
         target = None
@@ -1046,10 +1069,12 @@ class DrawingBoardWindow(tk.Toplevel):
         self.selected_image_id = target
         return target
 
+    # Bỏ chọn ảnh đang chọn
     def clear_selection(self):
         # Add visual deselection feedback if needed (e.g., remove outline)
         self.selected_image_id = None
 
+    # Xóa ảnh đang chọn
     def delete_selected_image(self, event=None):
         if not self.selected_image_id: return
         key = self._cid_to_key.pop(self.selected_image_id, None)
@@ -1058,32 +1083,25 @@ class DrawingBoardWindow(tk.Toplevel):
         if key: self._img_items.pop(key, None)
         self.clear_selection()
 
-    # --------------- Save and Exit ---------------
+    # Vẽ lại tất cả ảnh của trang lên canvas
+    def _redraw_images_layer(self):
+        for key, meta in list(self._img_items.items()):
+            pil, x, y, cid = meta["pil"], meta["x"], meta["y"], meta["cid"]
+            try:
+                self.canvas.coords(cid)  # check if item exists
+                self.canvas.coords(cid, x, y)
+            except tk.TclError:  # item deleted, recreate
+                self.canvas._image_refs.pop(cid, None)
+                tk_img = ImageTk.PhotoImage(pil, master=self.canvas)
+                new_cid = self.canvas.create_image(x, y, anchor="nw", image=tk_img)
+                self.canvas._image_refs[new_cid] = tk_img
+                meta["cid"] = new_cid
+                self._cid_to_key[new_cid] = key
+                if self.selected_image_id == cid: self.selected_image_id = new_cid
+                self._ensure_image_below_ink(new_cid)
 
-    def save_as_image(self):
-        path = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG", "*.png")])
-        if not path: return
-
-        w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
-        out = Image.new("RGB", (w, h), self.bg_color)
-
-        # Dán ảnh trước
-        for meta in self._img_items.values():
-            pil = meta["pil"].convert("RGBA")
-            out.paste(pil, (meta['x'], meta['y']), pil)
-
-        # Dán lớp mực lên trên
-        if self._ink_img:
-            ink_view = self._ink_img.resize((w, h), Image.LANCZOS)
-            out.paste(ink_view, (0, 0), ink_view)
-
-        try:
-            out.save(path, "PNG")
-            messagebox.showinfo("Lưu", f"Đã lưu bảng vẽ: {os.path.basename(path)}")
-        except Exception as e:
-            messagebox.showerror("Lỗi", f"Không thể lưu ảnh:\n{e}")
-
-
+    # 9) SERIALIZATION / SAVE– Lưu & Phục hồi
+    # Chuyển toàn bộ dữ liệu bảng vẽ thành dict (để lưu JSON)
     def to_dict(self):
         self._snapshot_current_page()
         data = {"version": 1, "meta": {
@@ -1118,6 +1136,7 @@ class DrawingBoardWindow(tk.Toplevel):
             data["pages"].append({"strokes": strokes, "images": images})
         return data
 
+    # Nạp dữ liệu từ dict vào bảng vẽ
     def load_from_dict(self, data: dict):
         from copy import deepcopy
         self.pages = []
@@ -1140,11 +1159,37 @@ class DrawingBoardWindow(tk.Toplevel):
             self.pages.append({"drawn_items": drawn_items, "images": images})
         self._load_page(0)
 
+    # Nạp dữ liệu từ file JSON .board.json
     def load_from_file(self, path: str):
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         self.load_from_dict(data)
 
+    # Xuất trang hiện tại thành ảnh PNG
+    def save_as_image(self):
+        path = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG", "*.png")])
+        if not path: return
+
+        w, h = self.canvas.winfo_width(), self.canvas.winfo_height()
+        out = Image.new("RGB", (w, h), self.bg_color)
+
+        # Dán ảnh trước
+        for meta in self._img_items.values():
+            pil = meta["pil"].convert("RGBA")
+            out.paste(pil, (meta['x'], meta['y']), pil)
+
+        # Dán lớp mực lên trên
+        if self._ink_img:
+            ink_view = self._ink_img.resize((w, h), Image.LANCZOS)
+            out.paste(ink_view, (0, 0), ink_view)
+
+        try:
+            out.save(path, "PNG")
+            messagebox.showinfo("Lưu", f"Đã lưu bảng vẽ: {os.path.basename(path)}")
+        except Exception as e:
+            messagebox.showerror("Lỗi", f"Không thể lưu ảnh:\n{e}")
+
+    # Lưu file bảng vẽ vào thư mục bài giảng
     def save_to_lesson(self):
         if not self.session_id:
             messagebox.showerror("Bảng vẽ", "Chưa có session_id. Hãy lưu buổi học trước.", parent=self)
@@ -1184,16 +1229,3 @@ class DrawingBoardWindow(tk.Toplevel):
             self._current_board_path = path
         except Exception as e:
             messagebox.showwarning("Lưu bảng vẽ", f"Lưu file xong nhưng chưa gắn vào DB:\n{e}", parent=self)
-    def destroy(self):
-        """Đóng cửa sổ bảng vẽ an toàn."""
-        try:
-            self._cancel_all_afters()
-        except Exception:
-            pass
-        try:
-            # Nếu bạn có tài nguyên khác cần giải phóng thì xử lý tại đây
-            # ví dụ: self._ink_img = None, etc.
-            pass
-        except Exception:
-            pass
-        super().destroy()
